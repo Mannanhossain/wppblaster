@@ -1,38 +1,41 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import mysql.connector
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from werkzeug.security import generate_password_hash, check_password_hash
 import jwt
 import datetime
 from functools import wraps
+import os
 
 app = Flask(__name__)
 CORS(app)
 
-SECRET_KEY = "your_secret_key_here"
+SECRET_KEY = os.environ.get('SECRET_KEY')
 
-# --- MySQL connection ---
+# --- PostgreSQL connection ---
 def get_db_connection():
-    conn = mysql.connector.connect(
-        host='your-mysql-host',
-        user='flaskuser',
-        password='flaskpass',
-        database='userdb'
+    conn = psycopg2.connect(
+        host=os.environ.get('PG_HOST'),
+        database=os.environ.get('PG_DB'),
+        user=os.environ.get('PG_USER'),
+        password=os.environ.get('PG_PASSWORD')
     )
     return conn
 
-# --- Database setup ---
+# --- Initialize database ---
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            phone VARCHAR(50) UNIQUE,
-            password VARCHAR(255)
+            id SERIAL PRIMARY KEY,
+            phone VARCHAR(50) UNIQUE NOT NULL,
+            password VARCHAR(255) NOT NULL
         )
     ''')
     conn.commit()
+    cursor.close()
     conn.close()
 
 init_db()
@@ -52,7 +55,7 @@ def token_required(f):
         return f(current_user, *args, **kwargs)
     return decorated
 
-# --- Routes ---
+# --- Signup route ---
 @app.route('/signup', methods=['POST'])
 def signup():
     data = request.json
@@ -65,17 +68,18 @@ def signup():
     hashed_pw = generate_password_hash(password)
     conn = get_db_connection()
     cursor = conn.cursor()
-
     try:
         cursor.execute('INSERT INTO users (phone, password) VALUES (%s, %s)', (phone, hashed_pw))
         conn.commit()
         return jsonify({'status': 'success', 'message': 'Account created successfully'})
-    except mysql.connector.IntegrityError:
+    except psycopg2.errors.UniqueViolation:
+        conn.rollback()
         return jsonify({'status': 'error', 'message': 'Phone already registered'}), 409
     finally:
+        cursor.close()
         conn.close()
 
-
+# --- Login route ---
 @app.route('/login', methods=['POST'])
 def login():
     data = request.json
@@ -86,6 +90,7 @@ def login():
     cursor = conn.cursor()
     cursor.execute('SELECT password FROM users WHERE phone=%s', (phone,))
     user = cursor.fetchone()
+    cursor.close()
     conn.close()
 
     if not user:
@@ -100,17 +105,15 @@ def login():
     else:
         return jsonify({'status': 'error', 'message': 'Invalid password'}), 401
 
-
+# --- Protected route ---
 @app.route('/profile')
 @token_required
 def profile(current_user):
     return jsonify({'status': 'success', 'phone': current_user})
 
-
 @app.route('/')
 def home():
     return jsonify({'message': 'Flask backend is running'})
-
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0')

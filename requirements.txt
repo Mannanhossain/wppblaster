@@ -2,5 +2,5 @@ flask
 flask-cors
 werkzeug
 pyjwt
-mysql-connector-python
+psycopg2-binary
 gunicorn

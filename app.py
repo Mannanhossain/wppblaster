@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import psycopg2
-from psycopg2.extras import RealDictCursor
+from psycopg2 import errors
 from werkzeug.security import generate_password_hash, check_password_hash
 import jwt
 import datetime
@@ -11,7 +11,8 @@ import os
 app = Flask(__name__)
 CORS(app)
 
-SECRET_KEY = os.environ.get('SECRET_KEY')
+# --- Secret key for JWT ---
+SECRET_KEY = os.environ.get('SECRET_KEY', 'fallback_secret_key')
 
 # --- PostgreSQL connection ---
 def get_db_connection():
@@ -19,7 +20,8 @@ def get_db_connection():
         host=os.environ.get('PG_HOST'),
         database=os.environ.get('PG_DB'),
         user=os.environ.get('PG_USER'),
-        password=os.environ.get('PG_PASSWORD')
+        password=os.environ.get('PG_PASSWORD'),
+        sslmode='require'  # Required for Render PostgreSQL
     )
     return conn
 
@@ -40,7 +42,7 @@ def init_db():
 
 init_db()
 
-# --- JWT token decorator ---
+# --- JWT Token Verification ---
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -50,12 +52,14 @@ def token_required(f):
         try:
             data = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
             current_user = data['phone']
-        except:
+        except jwt.ExpiredSignatureError:
+            return jsonify({'status': 'error', 'message': 'Token has expired'}), 401
+        except Exception:
             return jsonify({'status': 'error', 'message': 'Token is invalid'}), 401
         return f(current_user, *args, **kwargs)
     return decorated
 
-# --- Signup route ---
+# --- Signup Route ---
 @app.route('/signup', methods=['POST'])
 def signup():
     data = request.json
@@ -68,18 +72,22 @@ def signup():
     hashed_pw = generate_password_hash(password)
     conn = get_db_connection()
     cursor = conn.cursor()
+
     try:
         cursor.execute('INSERT INTO users (phone, password) VALUES (%s, %s)', (phone, hashed_pw))
         conn.commit()
         return jsonify({'status': 'success', 'message': 'Account created successfully'})
-    except psycopg2.errors.UniqueViolation:
+    except errors.UniqueViolation:
         conn.rollback()
         return jsonify({'status': 'error', 'message': 'Phone already registered'}), 409
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'status': 'error', 'message': str(e)}), 500
     finally:
         cursor.close()
         conn.close()
 
-# --- Login route ---
+# --- Login Route ---
 @app.route('/login', methods=['POST'])
 def login():
     data = request.json
@@ -105,15 +113,16 @@ def login():
     else:
         return jsonify({'status': 'error', 'message': 'Invalid password'}), 401
 
-# --- Protected route ---
-@app.route('/profile')
+# --- Protected Profile Route ---
+@app.route('/profile', methods=['GET'])
 @token_required
 def profile(current_user):
     return jsonify({'status': 'success', 'phone': current_user})
 
+# --- Home Route ---
 @app.route('/')
 def home():
-    return jsonify({'message': 'Flask backend is running'})
+    return jsonify({'message': 'Flask backend with PostgreSQL is running successfully!'})
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0')
+    app.run(host='0.0.0.0', port=10000)

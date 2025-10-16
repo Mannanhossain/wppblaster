@@ -1,6 +1,6 @@
-flask
+Flask
 flask-cors
-werkzeug
-pyjwt
 psycopg2-binary
+Werkzeug
+PyJWT
 gunicorn
